@@ -3,31 +3,97 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { generateImageSchema, insertImageSchema } from "@shared/schema";
 import { z } from "zod";
+import { createCanvas, loadImage, Canvas, CanvasRenderingContext2D } from "canvas";
+import { promises as fs } from "fs";
+import path from "path";
+import { randomUUID } from "crypto";
 
-// Real AI image generation using multiple AI services
+// Remove watermarks and add custom AnveshAI branding
+async function processImageWithCustomWatermark(imageBuffer: Buffer): Promise<string> {
+  try {
+    // Load the original image
+    const originalImage = await loadImage(imageBuffer);
+    
+    // Create canvas with higher quality
+    const canvas = createCanvas(originalImage.width, originalImage.height);
+    const ctx = canvas.getContext('2d');
+    
+    // Draw the original image
+    ctx.drawImage(originalImage, 0, 0);
+    
+    // Remove potential watermark area (bottom portion where watermarks typically appear)
+    const watermarkHeight = Math.floor(originalImage.height * 0.08); // Remove bottom 8%
+    if (watermarkHeight > 0) {
+      // Fill the watermark area with a subtle gradient or color sampling from nearby pixels
+      const imageData = ctx.getImageData(0, originalImage.height - watermarkHeight * 2, originalImage.width, watermarkHeight);
+      ctx.putImageData(imageData, 0, originalImage.height - watermarkHeight);
+    }
+    
+    // Add custom AnveshAI watermark with professional styling
+    const watermarkText = "AnveshAI";
+    const fontSize = Math.max(12, Math.floor(originalImage.width * 0.025));
+    
+    // Set up watermark styling
+    ctx.font = `${fontSize}px Arial, sans-serif`;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.lineWidth = 1;
+    
+    // Position watermark in bottom right
+    const textMetrics = ctx.measureText(watermarkText);
+    const x = originalImage.width - textMetrics.width - 15;
+    const y = originalImage.height - 10;
+    
+    // Add subtle shadow effect
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    ctx.fillText(watermarkText, x + 1, y + 1);
+    
+    // Add main watermark text
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+    ctx.fillText(watermarkText, x, y);
+    
+    // Convert to base64
+    const buffer = canvas.toBuffer('image/jpeg', { quality: 0.95 });
+    const base64 = buffer.toString('base64');
+    return `data:image/jpeg;base64,${base64}`;
+    
+  } catch (error) {
+    console.error("Error processing image with custom watermark:", error);
+    // Return original image as base64 if processing fails
+    const base64 = imageBuffer.toString('base64');
+    return `data:image/jpeg;base64,${base64}`;
+  }
+}
+
+// Real AI image generation using multiple AI services with enhanced quality
 async function generateImageWithAI(prompt: string): Promise<{ imageUrl: string; imageBase64?: string }> {
 
-  // Use Pollinations.ai with watermark removal
+  // Use Pollinations.ai with enhanced quality and custom watermarking
   try {
-    console.log("Attempting Pollinations AI generation for:", prompt);
+    console.log("Attempting high-quality Pollinations AI generation for:", prompt);
     
-    const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=512&height=512&seed=${Math.floor(Math.random() * 1000000)}`;
+    // Enhanced parameters for better quality
+    const enhancedPrompt = `${prompt}, high quality, detailed, masterpiece, best quality, ultra detailed, 8k resolution`;
+    const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(enhancedPrompt)}?width=1024&height=1024&seed=${Math.floor(Math.random() * 1000000)}&enhance=true&model=flux`;
     
     const imageResponse = await fetch(pollinationsUrl);
     if (imageResponse.ok && imageResponse.headers.get('content-type')?.includes('image')) {
-      console.log("Successfully generated AI image with Pollinations.ai");
+      console.log("Successfully generated high-quality AI image with Pollinations.ai");
       
       const imageBlob = await imageResponse.blob();
       const arrayBuffer = await imageBlob.arrayBuffer();
+      const imageBuffer = Buffer.from(arrayBuffer);
       
-      // For now, use the original image - watermark removal can be complex
-      // The images are high quality and the watermark is small
-      const base64String = Buffer.from(arrayBuffer).toString('base64');
-      const dataUrl = `data:image/jpeg;base64,${base64String}`;
+      // Process image to remove watermark and add custom AnveshAI branding
+      console.log("Processing image: removing watermark and adding AnveshAI branding...");
+      const processedImageUrl = await processImageWithCustomWatermark(imageBuffer);
       
-      console.log("Generated high-quality AI image with minimal watermark");
+      // Extract base64 from data URL
+      const base64String = processedImageUrl.split(',')[1];
+      
+      console.log("Generated high-quality AI image with AnveshAI watermark");
       return {
-        imageUrl: dataUrl,
+        imageUrl: processedImageUrl,
         imageBase64: base64String,
       };
     }
@@ -39,7 +105,10 @@ async function generateImageWithAI(prompt: string): Promise<{ imageUrl: string; 
   const API_KEY = process.env.HUGGINGFACE_API_KEY;
   if (API_KEY) {
     try {
-      console.log("Attempting Hugging Face API generation for:", prompt);
+      console.log("Attempting high-quality Hugging Face API generation for:", prompt);
+      
+      // Enhanced prompt for better quality
+      const enhancedPrompt = `${prompt}, high quality, detailed, masterpiece, best quality, ultra detailed, 8k resolution`;
       
       const response = await fetch(
         "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-2-1",
@@ -49,7 +118,13 @@ async function generateImageWithAI(prompt: string): Promise<{ imageUrl: string; 
           },
           method: "POST",
           body: JSON.stringify({
-            inputs: prompt,
+            inputs: enhancedPrompt,
+            parameters: {
+              width: 1024,
+              height: 1024,
+              guidance_scale: 7.5,
+              num_inference_steps: 50
+            }
           }),
         }
       );
@@ -57,12 +132,18 @@ async function generateImageWithAI(prompt: string): Promise<{ imageUrl: string; 
       if (response.ok) {
         const imageBlob = await response.blob();
         const arrayBuffer = await imageBlob.arrayBuffer();
-        const base64String = Buffer.from(arrayBuffer).toString('base64');
-        const imageUrl = `data:image/jpeg;base64,${base64String}`;
+        const imageBuffer = Buffer.from(arrayBuffer);
         
-        console.log("Successfully generated AI image with Hugging Face");
+        // Process image to add custom AnveshAI branding
+        console.log("Processing Hugging Face image: adding AnveshAI branding...");
+        const processedImageUrl = await processImageWithCustomWatermark(imageBuffer);
+        
+        // Extract base64 from data URL
+        const base64String = processedImageUrl.split(',')[1];
+        
+        console.log("Successfully generated high-quality AI image with Hugging Face and AnveshAI watermark");
         return {
-          imageUrl,
+          imageUrl: processedImageUrl,
           imageBase64: base64String,
         };
       } else {
@@ -188,6 +269,68 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error fetching image:", error);
       res.status(500).json({ message: "Failed to fetch image" });
+    }
+  });
+
+  // Serve image files from attached_assets folder
+  app.get("/api/images/:id/file", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const imagePath = path.join("attached_assets", `${id}.jpg`);
+      
+      console.log(`Attempting to serve image: ${imagePath}`);
+      
+      try {
+        // Check if file exists and serve it
+        await fs.access(imagePath);
+        console.log(`File found, serving: ${imagePath}`);
+        res.setHeader('Content-Type', 'image/jpeg');
+        res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache for 1 year
+        res.sendFile(path.resolve(imagePath));
+        return;
+      } catch (fileError) {
+        console.error(`File not found at ${imagePath}:`, fileError);
+      }
+      
+      // Fallback: try to serve from base64 data
+      const image = await storage.getGeneratedImageById(id);
+      if (image?.imageBase64) {
+        console.log(`Serving image from base64 data for ID: ${id}`);
+        const imageBuffer = Buffer.from(image.imageBase64, 'base64');
+        res.setHeader('Content-Type', 'image/jpeg');
+        res.setHeader('Cache-Control', 'public, max-age=31536000');
+        res.send(imageBuffer);
+        return;
+      }
+      
+      console.error(`No image data found for ID: ${id}`);
+      res.status(404).json({ message: "Image not found" });
+    } catch (error) {
+      console.error("Error serving image:", error);
+      res.status(500).json({ message: "Failed to serve image" });
+    }
+  });
+
+  // Debug endpoint to check what files are stored
+  app.get("/api/debug/files", async (req, res) => {
+    try {
+      const assetsDir = "attached_assets";
+      const files = await fs.readdir(assetsDir);
+      
+      const fileInfo = await Promise.all(files.map(async (file) => {
+        const filePath = path.join(assetsDir, file);
+        const stats = await fs.stat(filePath);
+        return {
+          name: file,
+          size: stats.size,
+          created: stats.birthtime
+        };
+      }));
+      
+      res.json({ files: fileInfo });
+    } catch (error) {
+      console.error("Error reading assets directory:", error);
+      res.status(500).json({ message: "Error reading files", error: error.message });
     }
   });
 
